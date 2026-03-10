@@ -33,11 +33,31 @@ export const Dashboard = () => {
 
     // ── Role check ───────────────────────────────────────────────────────
     const REQUIRED_ROLE = 'emailphisingIA';
-    const realmRoles: string[] = (keycloak.tokenParsed as any)?.realm_access?.roles ?? [];
-    const clientId = keycloak.clientId || '';
-    const clientRoles: string[] = (keycloak.tokenParsed as any)?.resource_access?.[clientId]?.roles ?? [];
-    const allRoles = [...new Set([...realmRoles, ...clientRoles])];
+    const tp = keycloak.tokenParsed as any;
+    const idTp = keycloak.idTokenParsed as any;
+
+    // Debug: log token contents to browser console (remove once working)
+    console.log('[Auth] Access token claims:', tp);
+    console.log('[Auth] ID token claims:', idTp);
+
+    // Collect roles from every possible location in both tokens
+    const collectRoles = (parsed: any): string[] => {
+        if (!parsed) return [];
+        const realm = parsed.realm_access?.roles ?? [];
+        // Check all clients in resource_access
+        const clientEntries = Object.values(parsed.resource_access ?? {}) as any[];
+        const client = clientEntries.flatMap((c: any) => c.roles ?? []);
+        // Some Keycloak configs put roles directly in a "roles" claim
+        const direct = Array.isArray(parsed.roles) ? parsed.roles : [];
+        return [...realm, ...client, ...direct];
+    };
+
+    const allRoles = [...new Set([...collectRoles(tp), ...collectRoles(idTp)])];
     const hasRole = allRoles.includes(REQUIRED_ROLE);
+    const username = tp?.preferred_username || idTp?.preferred_username || tp?.email || idTp?.email || '';
+
+    console.log('[Auth] All roles found:', allRoles);
+    console.log('[Auth] Has required role:', hasRole);
 
     if (!hasRole) {
         return (
@@ -50,7 +70,7 @@ export const Dashboard = () => {
                     </div>
                     <h1 className="text-xl font-bold mb-2 text-gray-800">Acceso Denegado</h1>
                     <p className="text-gray-500 text-sm mb-2">
-                        Hola <span className="font-semibold text-gray-700">{keycloak.tokenParsed?.preferred_username}</span>,
+                        Hola <span className="font-semibold text-gray-700">{username}</span>,
                         tu cuenta no tiene el rol <code className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded text-xs font-mono">{REQUIRED_ROLE}</code> necesario para acceder a esta aplicación.
                     </p>
                     <p className="text-gray-400 text-xs mb-6">

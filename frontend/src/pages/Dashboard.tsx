@@ -57,6 +57,11 @@ export const Dashboard = () => {
 
     console.log('[Auth] hasRealmRole:', hasRealmRole, '| hasClientRole:', hasClientRole, '| hasTokenRole:', hasTokenRole);
     console.log('[Auth] Final hasRole:', hasRole);
+    console.log('[Auth] Access token ALL KEYS:', tp ? Object.keys(tp) : 'null');
+    console.log('[Auth] realm_access:', tp?.realm_access);
+    console.log('[Auth] resource_access:', tp?.resource_access);
+    console.log('[Auth] roles (direct):', tp?.roles);
+    console.log('[Auth] groups:', tp?.groups);
 
     if (!hasRole) {
         return (

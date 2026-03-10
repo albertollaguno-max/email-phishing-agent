@@ -10,6 +10,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
                 onLoad: 'login-required',
                 checkLoginIframe: false,
                 pkceMethod: 'S256',
+                scope: 'openid profile roles',
             }}
         >
             {children}

@@ -15,7 +15,6 @@ KEYCLOAK_REALM = os.getenv("KEYCLOAK_REALM", "myrealm")
 KEYCLOAK_CLIENT_ID = os.getenv("KEYCLOAK_CLIENT_ID", "email-agent-ui")
 KEYCLOAK_CLIENT_SECRET = os.getenv("KEYCLOAK_CLIENT_SECRET", "")
 
-# Required Keycloak realm role to access the application
 REQUIRED_ROLE = "emailphisingIA"
 
 keycloak_openid = KeycloakOpenID(
@@ -33,97 +32,34 @@ class UserUser(BaseModel):
     username: str
     email: str | None = None
     roles: list[str] = []
-    has_required_role: bool = False
-
-
-def _decode_and_extract(token: str) -> UserUser:
-    """Decode JWT and extract user info with roles.
-    Strategy: try token introspection first (returns full data from Keycloak server),
-    then fall back to local JWT decode.
-    """
-    all_roles = []
-    username = "unknown"
-    email = None
-    sub = None
-
-    # 1. Always decode the JWT locally (for sub, username, email at minimum)
-    try:
-        token_info = keycloak_openid.decode_token(token)
-        sub = token_info.get("sub")
-        username = token_info.get("preferred_username", "unknown")
-        email = token_info.get("email")
-        # Try to get roles from JWT (may be empty with lightweight tokens)
-        realm_roles = token_info.get("realm_access", {}).get("roles", [])
-        for client_data in token_info.get("resource_access", {}).values():
-            realm_roles.extend(client_data.get("roles", []))
-        all_roles = list(set(realm_roles))
-    except Exception as e:
-        logger.error(f"JWT decode failed: {e}")
-        raise
-
-    # 2. If no roles found in JWT, try token introspection (asks Keycloak directly)
-    if not all_roles:
-        try:
-            introspection = keycloak_openid.introspect(token)
-            logger.info(f"Token introspection result keys: {list(introspection.keys())}")
-            # Introspection returns realm_access, resource_access, etc.
-            intro_realm = introspection.get("realm_access", {}).get("roles", [])
-            intro_client = []
-            for client_data in introspection.get("resource_access", {}).values():
-                intro_client.extend(client_data.get("roles", []))
-            all_roles = list(set(intro_realm + intro_client))
-            # Also grab username/email from introspection if missing
-            if username == "unknown":
-                username = introspection.get("preferred_username", username)
-            if not email:
-                email = introspection.get("email", email)
-            logger.info(f"Roles from introspection: {all_roles}")
-        except Exception as e:
-            logger.warning(f"Token introspection failed (may need client_secret): {e}")
-
-    user = UserUser(
-        id=sub or "",
-        username=username,
-        email=email,
-        roles=all_roles,
-        has_required_role=REQUIRED_ROLE in all_roles,
-    )
-    return user
-
-
-async def get_current_user_no_role(credentials: HTTPAuthorizationCredentials = Security(security)) -> UserUser:
-    """Validate token and return user info WITHOUT enforcing role (for /auth/me)."""
-    try:
-        return _decode_and_extract(credentials.credentials)
-    except Exception as e:
-        logger.error(f"Failed to decode Keycloak token: {e}")
-        raise HTTPException(
-            status_code=401,
-            detail=f"Invalid authentication credentials: {str(e)}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> UserUser:
-    """Validate token, extract user, and ENFORCE required role."""
+    """Validate Keycloak JWT and enforce required role."""
+    token = credentials.credentials
     try:
-        user = _decode_and_extract(credentials.credentials)
+        token_info = keycloak_openid.decode_token(token)
+
+        realm_roles = token_info.get("realm_access", {}).get("roles", [])
+        client_roles = []
+        for client_data in token_info.get("resource_access", {}).values():
+            client_roles.extend(client_data.get("roles", []))
+        all_roles = list(set(realm_roles + client_roles))
+
+        user = UserUser(
+            id=token_info.get("sub"),
+            username=token_info.get("preferred_username", "unknown"),
+            email=token_info.get("email"),
+            roles=all_roles
+        )
+
+        if REQUIRED_ROLE not in all_roles:
+            logger.warning(f"Access denied for '{user.username}' — roles: {all_roles}")
+            raise HTTPException(status_code=403, detail=f"Missing required role '{REQUIRED_ROLE}'")
+
+        return user
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Failed to decode Keycloak token: {e}")
-        raise HTTPException(
-            status_code=401,
-            detail=f"Invalid authentication credentials: {str(e)}",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    if not user.has_required_role:
-        logger.warning(
-            f"Access denied for user '{user.username}' — missing required role '{REQUIRED_ROLE}'. "
-            f"User roles: {user.roles}"
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=f"Access denied: you need the '{REQUIRED_ROLE}' role to use this application.",
-        )
-
-    return user
+        logger.error(f"Token validation failed: {e}")
+        raise HTTPException(status_code=401, detail=str(e), headers={"WWW-Authenticate": "Bearer"})

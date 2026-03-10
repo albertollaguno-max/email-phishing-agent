@@ -1,14 +1,69 @@
 import { useKeycloak } from "@react-keycloak/web";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { AllowedSenders } from "../components/AllowedSenders";
 import { EmailLogs } from "../components/EmailLogs";
 import { fetchWithAuth } from "../api";
+
+const REQUIRED_ROLE = 'emailphisingIA';
 
 export const Dashboard = () => {
     const { keycloak, initialized } = useKeycloak();
     const [checking, setChecking] = useState(false);
     const [checkMsg, setCheckMsg] = useState<string | null>(null);
-    const [logsKey, setLogsKey] = useState(0); // bump to refresh EmailLogs
+    const [logsKey, setLogsKey] = useState(0);
+
+    // Role check via userinfo endpoint
+    const [roleStatus, setRoleStatus] = useState<'loading' | 'granted' | 'denied'>('loading');
+    const [username, setUsername] = useState('');
+
+    useEffect(() => {
+        if (!initialized || !keycloak.authenticated) return;
+
+        const checkRole = async () => {
+            try {
+                // Call Keycloak userinfo endpoint — always returns full user data
+                const userInfoUrl = `${keycloak.authServerUrl}/realms/${keycloak.realm}/protocol/openid-connect/userinfo`;
+                const res = await fetch(userInfoUrl, {
+                    headers: { Authorization: `Bearer ${keycloak.token}` }
+                });
+                const userInfo = await res.json();
+                console.log('[Auth] UserInfo response:', userInfo);
+
+                setUsername(userInfo.preferred_username || userInfo.email || '');
+
+                // Check roles in every possible location
+                const realmRoles: string[] = userInfo.realm_access?.roles ?? [];
+                const clientEntries = Object.values(userInfo.resource_access ?? {}) as any[];
+                const clientRoles: string[] = clientEntries.flatMap((c: any) => c.roles ?? []);
+                const directRoles: string[] = Array.isArray(userInfo.roles) ? userInfo.roles : [];
+                const groupRoles: string[] = Array.isArray(userInfo.groups) ? userInfo.groups : [];
+
+                const allRoles = [...new Set([...realmRoles, ...clientRoles, ...directRoles, ...groupRoles])];
+                console.log('[Auth] All roles from userinfo:', allRoles);
+
+                if (allRoles.includes(REQUIRED_ROLE)) {
+                    setRoleStatus('granted');
+                } else {
+                    // Also try keycloak-js native check as last resort
+                    if (keycloak.hasRealmRole(REQUIRED_ROLE) || keycloak.hasResourceRole(REQUIRED_ROLE)) {
+                        setRoleStatus('granted');
+                    } else {
+                        setRoleStatus('denied');
+                    }
+                }
+            } catch (e) {
+                console.error('[Auth] Error fetching userinfo:', e);
+                // On error, try native keycloak method
+                if (keycloak.hasRealmRole(REQUIRED_ROLE) || keycloak.hasResourceRole(REQUIRED_ROLE)) {
+                    setRoleStatus('granted');
+                } else {
+                    setRoleStatus('denied');
+                }
+            }
+        };
+
+        checkRole();
+    }, [initialized, keycloak.authenticated]);
 
     if (!initialized) {
         return <div className="flex items-center justify-center min-h-screen text-gray-500">Connecting to Keycloak...</div>;
@@ -31,39 +86,11 @@ export const Dashboard = () => {
         );
     }
 
-    // ── Role check ───────────────────────────────────────────────────────
-    const REQUIRED_ROLE = 'emailphisingIA';
-    const tp = keycloak.tokenParsed as any;
-    const idTp = keycloak.idTokenParsed as any;
+    if (roleStatus === 'loading') {
+        return <div className="flex items-center justify-center min-h-screen text-gray-500 animate-pulse">Verificando permisos...</div>;
+    }
 
-    // Method 1: keycloak-js native role check (most reliable)
-    const hasRealmRole = keycloak.hasRealmRole(REQUIRED_ROLE);
-    const hasClientRole = keycloak.hasResourceRole(REQUIRED_ROLE);
-
-    // Method 2: manual token parsing fallback
-    const collectRoles = (parsed: any): string[] => {
-        if (!parsed) return [];
-        const realm = parsed.realm_access?.roles ?? [];
-        const clientEntries = Object.values(parsed.resource_access ?? {}) as any[];
-        const client = clientEntries.flatMap((c: any) => c.roles ?? []);
-        const direct = Array.isArray(parsed.roles) ? parsed.roles : [];
-        return [...realm, ...client, ...direct];
-    };
-    const tokenRoles = [...new Set([...collectRoles(tp), ...collectRoles(idTp)])];
-    const hasTokenRole = tokenRoles.includes(REQUIRED_ROLE);
-
-    const hasRole = hasRealmRole || hasClientRole || hasTokenRole;
-    const username = tp?.preferred_username || idTp?.preferred_username || tp?.email || idTp?.email || '';
-
-    console.log('[Auth] hasRealmRole:', hasRealmRole, '| hasClientRole:', hasClientRole, '| hasTokenRole:', hasTokenRole);
-    console.log('[Auth] Final hasRole:', hasRole);
-    console.log('[Auth] Access token ALL KEYS:', tp ? Object.keys(tp) : 'null');
-    console.log('[Auth] realm_access:', tp?.realm_access);
-    console.log('[Auth] resource_access:', tp?.resource_access);
-    console.log('[Auth] roles (direct):', tp?.roles);
-    console.log('[Auth] groups:', tp?.groups);
-
-    if (!hasRole) {
+    if (roleStatus === 'denied') {
         return (
             <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
                 <div className="bg-white p-12 rounded-2xl shadow-xl text-center max-w-md w-full mx-4 border border-red-100">
@@ -75,23 +102,19 @@ export const Dashboard = () => {
                     <h1 className="text-xl font-bold mb-2 text-gray-800">Acceso Denegado</h1>
                     <p className="text-gray-500 text-sm mb-2">
                         Hola <span className="font-semibold text-gray-700">{username}</span>,
-                        tu cuenta no tiene el rol <code className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded text-xs font-mono">{REQUIRED_ROLE}</code> necesario para acceder a esta aplicación.
+                        tu cuenta no tiene el rol <code className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded text-xs font-mono">{REQUIRED_ROLE}</code> necesario.
                     </p>
                     <p className="text-gray-400 text-xs mb-6">
                         Contacta con el administrador para que te asigne el rol en Keycloak.
                     </p>
-                    <button
-                        onClick={() => keycloak.logout()}
-                        className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors shadow"
-                    >
+                    <button onClick={() => keycloak.logout()}
+                        className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors shadow">
                         Cerrar sesión
                     </button>
                 </div>
             </div>
         );
     }
-
-
     const handleCheckEmails = async () => {
         setChecking(true);
         setCheckMsg(null);

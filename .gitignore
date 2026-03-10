@@ -1,0 +1,63 @@
+# Secretos y configuración local — NUNCA subir al repo
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+*.so
+venv/
+env/
+.venv/
+.env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+*.log
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+*.tsbuildinfo
+
+# Docker volunes / data locales
+data/
+volumes/
+*.sqlite
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Scripts de debug temporales (no parte del core)
+backend/debug_mailbox.py
+backend/debug_imap.py
+backend/test_unseen.py
+backend/test_run.py
+backend/test_mark_seen.py
+backend/unseen_all.py
+backend/reset_unseen_raw.py
+backend/clear_logs.py
+output.log
+logs.txt

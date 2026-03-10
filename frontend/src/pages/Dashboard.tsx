@@ -31,6 +31,43 @@ export const Dashboard = () => {
         );
     }
 
+    // ── Role check ───────────────────────────────────────────────────────
+    const REQUIRED_ROLE = 'emailphisingIA';
+    const realmRoles: string[] = (keycloak.tokenParsed as any)?.realm_access?.roles ?? [];
+    const clientId = keycloak.clientId || '';
+    const clientRoles: string[] = (keycloak.tokenParsed as any)?.resource_access?.[clientId]?.roles ?? [];
+    const allRoles = [...new Set([...realmRoles, ...clientRoles])];
+    const hasRole = allRoles.includes(REQUIRED_ROLE);
+
+    if (!hasRole) {
+        return (
+            <div className="flex flex-col items-center justify-center min-h-screen bg-gray-50">
+                <div className="bg-white p-12 rounded-2xl shadow-xl text-center max-w-md w-full mx-4 border border-red-100">
+                    <div className="mx-auto w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mb-5">
+                        <svg className="h-8 w-8 text-red-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                        </svg>
+                    </div>
+                    <h1 className="text-xl font-bold mb-2 text-gray-800">Acceso Denegado</h1>
+                    <p className="text-gray-500 text-sm mb-2">
+                        Hola <span className="font-semibold text-gray-700">{keycloak.tokenParsed?.preferred_username}</span>,
+                        tu cuenta no tiene el rol <code className="bg-red-50 text-red-600 px-1.5 py-0.5 rounded text-xs font-mono">{REQUIRED_ROLE}</code> necesario para acceder a esta aplicación.
+                    </p>
+                    <p className="text-gray-400 text-xs mb-6">
+                        Contacta con el administrador para que te asigne el rol en Keycloak.
+                    </p>
+                    <button
+                        onClick={() => keycloak.logout()}
+                        className="w-full bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors shadow"
+                    >
+                        Cerrar sesión
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
+
     const handleCheckEmails = async () => {
         setChecking(true);
         setCheckMsg(null);

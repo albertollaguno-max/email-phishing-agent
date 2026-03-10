@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 from database import SenderType
 
@@ -40,9 +40,15 @@ class EmailAnalysisLogResponse(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     response_sent_at: Optional[datetime]
+    user_feedback: Optional[str]
+    user_notes: Optional[str]
 
     class Config:
         from_attributes = True
+
+class FeedbackUpdate(BaseModel):
+    user_feedback: Literal['correct', 'incorrect']
+    user_notes: Optional[str] = None
 
 # --- System Logs ---
 class SystemLogResponse(BaseModel):
@@ -53,3 +59,6 @@ class SystemLogResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+

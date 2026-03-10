@@ -42,14 +42,19 @@ class EmailAnalysisLog(Base):
     forwarded_by = Column(String(255), nullable=False, index=True)
     subject = Column(String(512), nullable=True)
     date_received = Column(DateTime, default=datetime.utcnow)
-    
+
     is_fraudulent = Column(Boolean, nullable=True)
     ai_explanation = Column(Text, nullable=True)
     ai_provider_used = Column(String(50), nullable=True)
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
-    
+
     response_sent_at = Column(DateTime, nullable=True)
+
+    # Human feedback for few-shot learning
+    # 'correct' = AI was right | 'incorrect' = AI was wrong (false positive/negative)
+    user_feedback = Column(String(20), nullable=True)  # 'correct' | 'incorrect'
+    user_notes = Column(Text, nullable=True)  # Optional comment from user
 
 class SystemLog(Base):
     __tablename__ = "system_logs"

@@ -13,6 +13,70 @@ logger = logging.getLogger(__name__)
 
 CHECK_INTERVAL_MINUTES = int(os.getenv("CHECK_INTERVAL_MINUTES", "5"))
 
+
+def _extract_original_sender(msg, body_text: str, body_html: str) -> str:
+    """
+    Try to extract the original sender from a forwarded email.
+    Handles: Outlook, Gmail, iOS Mail, Thunderbird, plain text.
+    Returns the best match found or 'unknown'.
+    """
+    import html as html_module
+    from email.utils import parseaddr
+
+    # --- Strategy 1: imap_tools parsed headers (works if client embeds original as attachment) ---
+    # Check if there are embedded message headers (Outlook sometimes does this)
+    try:
+        for part in (msg.attachments or []):
+            if hasattr(part, 'filename') and part.filename and 'message' in part.filename.lower():
+                pass  # Could extract from embedded message, skip for now
+    except Exception:
+        pass
+
+    # --- Strategy 2: Parse plain text body ---
+    # Patterns cover: Outlook EN/ES, Gmail EN/ES, iOS, Thunderbird, generic
+    text_patterns = [
+        # Outlook-style:  From: Name <email@domain.com>
+        r'(?:^|\n)[ \t]*De:\s*(.+?)\s*(?:\n|$)',        # Outlook ES
+        r'(?:^|\n)[ \t]*From:\s*(.+?)\s*(?:\n|$)',      # Outlook EN / generic
+        r'(?:^|\n)[ \t]*Von:\s*(.+?)\s*(?:\n|$)',       # Outlook DE
+        # Gmail forwarded block header: "---------- Forwarded message ---------\nFrom: ..."
+        r'Forwarded message[\s\S]{0,200}?From:\s*(.+?)\n',
+        r'mensaje reenviado[\s\S]{0,200}?De:\s*(.+?)\n',
+    ]
+    for pattern in text_patterns:
+        m = re.search(pattern, body_text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            raw = m.group(1).strip()
+            # parseaddr handles both 'Name <email>' and bare emails
+            name, addr = parseaddr(raw)
+            if addr and '@' in addr:
+                return f"{name} <{addr}>" if name else addr
+            if raw:  # Return as-is even without a valid email
+                return raw[:200]
+
+    # --- Strategy 3: Search inside HTML (strip tags first) ---
+    if body_html:
+        # Remove HTML tags
+        clean = re.sub(r'<[^>]+>', ' ', body_html)
+        clean = html_module.unescape(clean)
+        for pattern in text_patterns:
+            m = re.search(pattern, clean, re.IGNORECASE | re.MULTILINE)
+            if m:
+                raw = m.group(1).strip()
+                name, addr = parseaddr(raw)
+                if addr and '@' in addr:
+                    return f"{name} <{addr}>" if name else addr
+                if raw:
+                    return raw[:200]
+
+    # --- Strategy 4: Any email address in the body that's not the forwarder ---
+    # Pick first email-looking string found in body
+    all_emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.]+', body_text or body_html)
+    for candidate in all_emails:
+        return candidate  # Return the first one found
+
+    return "unknown"
+
 def run_agent_loop():
     logger.info("Starting background agent loop execution...")
     db: Session = SessionLocal()
@@ -25,6 +89,31 @@ def run_agent_loop():
         if not allowed_domains and not allowed_emails:
             logger.warning("No allowed senders configured. Exiting loop step early.")
             return
+
+        # Load last N human-corrected examples for few-shot learning (max 8 to keep prompt size reasonable)
+        feedback_examples = []
+        corrected_logs = (
+            db.query(EmailAnalysisLog)
+            .filter(EmailAnalysisLog.user_feedback.isnot(None))
+            .order_by(EmailAnalysisLog.date_received.desc())
+            .limit(8)
+            .all()
+        )
+        for cl in corrected_logs:
+            # When user marked 'incorrect', the real verdict is the opposite of what AI said
+            real_is_fraudulent = cl.is_fraudulent
+            if cl.user_feedback == 'incorrect':
+                real_is_fraudulent = not cl.is_fraudulent
+            feedback_examples.append({
+                'subject': cl.subject or '',
+                'sender': cl.from_address or '',
+                'body': '',  # body not stored, use subject+explanation as context
+                'is_fraudulent': real_is_fraudulent,
+                'explanation': cl.ai_explanation or ''
+            })
+
+        if feedback_examples:
+            logger.info(f"Loaded {len(feedback_examples)} feedback examples for few-shot learning")
 
         client = EmailClient()
         for msg in client.fetch_unseen_emails():
@@ -55,16 +144,21 @@ def run_agent_loop():
                     logger.info(f"Ignored unauthorized forwarder: {forwarder_email}")
                     continue
 
-                # 4. Extract original sender from the email body (simplistic heuristic for forwarded emails)
-                body_text = msg.text or msg.html or ""
-                original_sender_match = re.search(r'From:\s*(.+?)\s*(\n|<)', body_text, re.IGNORECASE)
-                original_sender = original_sender_match.group(1).strip() if original_sender_match else "unknown"
+                # 4. Extract original sender from forwarded content
+                # Strategy: try multiple forwarding formats before falling back
+                body_text = msg.text or ""
+                body_html = msg.html or ""
+
+                original_sender = _extract_original_sender(msg, body_text, body_html)
 
                 logger.info(f"Processing allowed forwarded email from {forwarder_email} with subject '{msg.subject}'")
                 print(f"DEBUG: Msg {msg.uid} matched. Calling AI for {msg.subject}...")
 
-                # 5. Analyze with AI
-                ai_result, p_tokens, c_tokens, provider = analyze_email_content(msg.subject, original_sender, body_text)
+                # 5. Analyze with AI (passing feedback examples for few-shot learning)
+                ai_result, p_tokens, c_tokens, provider = analyze_email_content(
+                    msg.subject, original_sender, body_text or body_html,
+                    feedback_examples=feedback_examples if feedback_examples else None
+                )
                 print(f"DEBUG: Msg {msg.uid} AI result: {ai_result}")
                 
                 # 6. Save initial log

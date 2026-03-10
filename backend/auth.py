@@ -37,20 +37,54 @@ class UserUser(BaseModel):
 
 
 def _decode_and_extract(token: str) -> UserUser:
-    """Decode JWT server-side and extract user info with all roles."""
-    token_info = keycloak_openid.decode_token(token)
+    """Decode JWT and extract user info with roles.
+    Strategy: try token introspection first (returns full data from Keycloak server),
+    then fall back to local JWT decode.
+    """
+    all_roles = []
+    username = "unknown"
+    email = None
+    sub = None
 
-    realm_roles = token_info.get("realm_access", {}).get("roles", [])
-    # Collect roles from ALL clients in resource_access
-    all_client_roles = []
-    for client_data in token_info.get("resource_access", {}).values():
-        all_client_roles.extend(client_data.get("roles", []))
-    all_roles = list(set(realm_roles + all_client_roles))
+    # 1. Always decode the JWT locally (for sub, username, email at minimum)
+    try:
+        token_info = keycloak_openid.decode_token(token)
+        sub = token_info.get("sub")
+        username = token_info.get("preferred_username", "unknown")
+        email = token_info.get("email")
+        # Try to get roles from JWT (may be empty with lightweight tokens)
+        realm_roles = token_info.get("realm_access", {}).get("roles", [])
+        for client_data in token_info.get("resource_access", {}).values():
+            realm_roles.extend(client_data.get("roles", []))
+        all_roles = list(set(realm_roles))
+    except Exception as e:
+        logger.error(f"JWT decode failed: {e}")
+        raise
+
+    # 2. If no roles found in JWT, try token introspection (asks Keycloak directly)
+    if not all_roles:
+        try:
+            introspection = keycloak_openid.introspect(token)
+            logger.info(f"Token introspection result keys: {list(introspection.keys())}")
+            # Introspection returns realm_access, resource_access, etc.
+            intro_realm = introspection.get("realm_access", {}).get("roles", [])
+            intro_client = []
+            for client_data in introspection.get("resource_access", {}).values():
+                intro_client.extend(client_data.get("roles", []))
+            all_roles = list(set(intro_realm + intro_client))
+            # Also grab username/email from introspection if missing
+            if username == "unknown":
+                username = introspection.get("preferred_username", username)
+            if not email:
+                email = introspection.get("email", email)
+            logger.info(f"Roles from introspection: {all_roles}")
+        except Exception as e:
+            logger.warning(f"Token introspection failed (may need client_secret): {e}")
 
     user = UserUser(
-        id=token_info.get("sub"),
-        username=token_info.get("preferred_username", "unknown"),
-        email=token_info.get("email"),
+        id=sub or "",
+        username=username,
+        email=email,
         roles=all_roles,
         has_required_role=REQUIRED_ROLE in all_roles,
     )

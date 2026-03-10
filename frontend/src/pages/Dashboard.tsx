@@ -36,28 +36,27 @@ export const Dashboard = () => {
     const tp = keycloak.tokenParsed as any;
     const idTp = keycloak.idTokenParsed as any;
 
-    // Debug: log token contents to browser console (remove once working)
-    console.log('[Auth] Access token claims:', tp);
-    console.log('[Auth] ID token claims:', idTp);
+    // Method 1: keycloak-js native role check (most reliable)
+    const hasRealmRole = keycloak.hasRealmRole(REQUIRED_ROLE);
+    const hasClientRole = keycloak.hasResourceRole(REQUIRED_ROLE);
 
-    // Collect roles from every possible location in both tokens
+    // Method 2: manual token parsing fallback
     const collectRoles = (parsed: any): string[] => {
         if (!parsed) return [];
         const realm = parsed.realm_access?.roles ?? [];
-        // Check all clients in resource_access
         const clientEntries = Object.values(parsed.resource_access ?? {}) as any[];
         const client = clientEntries.flatMap((c: any) => c.roles ?? []);
-        // Some Keycloak configs put roles directly in a "roles" claim
         const direct = Array.isArray(parsed.roles) ? parsed.roles : [];
         return [...realm, ...client, ...direct];
     };
+    const tokenRoles = [...new Set([...collectRoles(tp), ...collectRoles(idTp)])];
+    const hasTokenRole = tokenRoles.includes(REQUIRED_ROLE);
 
-    const allRoles = [...new Set([...collectRoles(tp), ...collectRoles(idTp)])];
-    const hasRole = allRoles.includes(REQUIRED_ROLE);
+    const hasRole = hasRealmRole || hasClientRole || hasTokenRole;
     const username = tp?.preferred_username || idTp?.preferred_username || tp?.email || idTp?.email || '';
 
-    console.log('[Auth] All roles found:', allRoles);
-    console.log('[Auth] Has required role:', hasRole);
+    console.log('[Auth] hasRealmRole:', hasRealmRole, '| hasClientRole:', hasClientRole, '| hasTokenRole:', hasTokenRole);
+    console.log('[Auth] Final hasRole:', hasRole);
 
     if (!hasRole) {
         return (

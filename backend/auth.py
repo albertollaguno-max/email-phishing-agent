@@ -33,47 +33,63 @@ class UserUser(BaseModel):
     username: str
     email: str | None = None
     roles: list[str] = []
+    has_required_role: bool = False
 
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> UserUser:
-    """
-    Validate Keycloak JWT token, extract user info, and enforce required role.
-    """
-    token = credentials.credentials
+
+def _decode_and_extract(token: str) -> UserUser:
+    """Decode JWT server-side and extract user info with all roles."""
+    token_info = keycloak_openid.decode_token(token)
+
+    realm_roles = token_info.get("realm_access", {}).get("roles", [])
+    # Collect roles from ALL clients in resource_access
+    all_client_roles = []
+    for client_data in token_info.get("resource_access", {}).values():
+        all_client_roles.extend(client_data.get("roles", []))
+    all_roles = list(set(realm_roles + all_client_roles))
+
+    user = UserUser(
+        id=token_info.get("sub"),
+        username=token_info.get("preferred_username", "unknown"),
+        email=token_info.get("email"),
+        roles=all_roles,
+        has_required_role=REQUIRED_ROLE in all_roles,
+    )
+    return user
+
+
+async def get_current_user_no_role(credentials: HTTPAuthorizationCredentials = Security(security)) -> UserUser:
+    """Validate token and return user info WITHOUT enforcing role (for /auth/me)."""
     try:
-        token_info = keycloak_openid.decode_token(token)
-
-        realm_roles = token_info.get("realm_access", {}).get("roles", [])
-        # Also check client-level roles (resource_access.<client_id>.roles)
-        client_roles = token_info.get("resource_access", {}).get(KEYCLOAK_CLIENT_ID, {}).get("roles", [])
-        all_roles = list(set(realm_roles + client_roles))
-
-        user = UserUser(
-            id=token_info.get("sub"),
-            username=token_info.get("preferred_username", "unknown"),
-            email=token_info.get("email"),
-            roles=all_roles
-        )
-
-        # ── Role enforcement ──────────────────────────────────────────
-        if REQUIRED_ROLE not in all_roles:
-            logger.warning(
-                f"Access denied for user '{user.username}' — missing required role '{REQUIRED_ROLE}'. "
-                f"User roles: {all_roles}"
-            )
-            raise HTTPException(
-                status_code=403,
-                detail=f"Access denied: you need the '{REQUIRED_ROLE}' role to use this application.",
-            )
-
-        return user
-
-    except HTTPException:
-        raise  # Re-raise 403 as-is
+        return _decode_and_extract(credentials.credentials)
     except Exception as e:
-        logger.error(f"Failed to decode or verify Keycloak token: {e}")
+        logger.error(f"Failed to decode Keycloak token: {e}")
         raise HTTPException(
             status_code=401,
             detail=f"Invalid authentication credentials: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Security(security)) -> UserUser:
+    """Validate token, extract user, and ENFORCE required role."""
+    try:
+        user = _decode_and_extract(credentials.credentials)
+    except Exception as e:
+        logger.error(f"Failed to decode Keycloak token: {e}")
+        raise HTTPException(
+            status_code=401,
+            detail=f"Invalid authentication credentials: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if not user.has_required_role:
+        logger.warning(
+            f"Access denied for user '{user.username}' — missing required role '{REQUIRED_ROLE}'. "
+            f"User roles: {user.roles}"
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Access denied: you need the '{REQUIRED_ROLE}' role to use this application.",
+        )
+
+    return user

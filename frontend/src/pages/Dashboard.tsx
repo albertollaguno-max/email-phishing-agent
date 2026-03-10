@@ -12,7 +12,7 @@ export const Dashboard = () => {
     const [checkMsg, setCheckMsg] = useState<string | null>(null);
     const [logsKey, setLogsKey] = useState(0);
 
-    // Role check via userinfo endpoint
+    // Role check via backend (server-side JWT decoding)
     const [roleStatus, setRoleStatus] = useState<'loading' | 'granted' | 'denied'>('loading');
     const [username, setUsername] = useState('');
 
@@ -21,44 +21,21 @@ export const Dashboard = () => {
 
         const checkRole = async () => {
             try {
-                // Call Keycloak userinfo endpoint — always returns full user data
-                const userInfoUrl = `${keycloak.authServerUrl}/realms/${keycloak.realm}/protocol/openid-connect/userinfo`;
-                const res = await fetch(userInfoUrl, {
-                    headers: { Authorization: `Bearer ${keycloak.token}` }
-                });
-                const userInfo = await res.json();
-                console.log('[Auth] UserInfo response:', userInfo);
+                // Call our backend which decodes the full JWT server-side
+                const me = await fetchWithAuth('/auth/me');
+                console.log('[Auth] /auth/me response:', me);
 
-                setUsername(userInfo.preferred_username || userInfo.email || '');
+                setUsername(me.username || me.email || '');
 
-                // Check roles in every possible location
-                const realmRoles: string[] = userInfo.realm_access?.roles ?? [];
-                const clientEntries = Object.values(userInfo.resource_access ?? {}) as any[];
-                const clientRoles: string[] = clientEntries.flatMap((c: any) => c.roles ?? []);
-                const directRoles: string[] = Array.isArray(userInfo.roles) ? userInfo.roles : [];
-                const groupRoles: string[] = Array.isArray(userInfo.groups) ? userInfo.groups : [];
-
-                const allRoles = [...new Set([...realmRoles, ...clientRoles, ...directRoles, ...groupRoles])];
-                console.log('[Auth] All roles from userinfo:', allRoles);
-
-                if (allRoles.includes(REQUIRED_ROLE)) {
+                if (me.has_required_role) {
                     setRoleStatus('granted');
                 } else {
-                    // Also try keycloak-js native check as last resort
-                    if (keycloak.hasRealmRole(REQUIRED_ROLE) || keycloak.hasResourceRole(REQUIRED_ROLE)) {
-                        setRoleStatus('granted');
-                    } else {
-                        setRoleStatus('denied');
-                    }
-                }
-            } catch (e) {
-                console.error('[Auth] Error fetching userinfo:', e);
-                // On error, try native keycloak method
-                if (keycloak.hasRealmRole(REQUIRED_ROLE) || keycloak.hasResourceRole(REQUIRED_ROLE)) {
-                    setRoleStatus('granted');
-                } else {
+                    console.warn('[Auth] User lacks required role. Roles:', me.roles);
                     setRoleStatus('denied');
                 }
+            } catch (e) {
+                console.error('[Auth] Error checking role:', e);
+                setRoleStatus('denied');
             }
         };
 

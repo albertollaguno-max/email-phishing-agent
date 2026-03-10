@@ -1,7 +1,7 @@
 from fastapi import FastAPI, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from database import init_db
-from auth import get_current_user, UserUser
+from auth import get_current_user, get_current_user_no_role, UserUser
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -39,6 +39,10 @@ async def startup_event():
 def health_check():
     return {"status": "ok", "message": "Email Phishing Agent API is running"}
 
+@app.get("/api/auth/me")
+async def get_me(current_user: UserUser = Depends(get_current_user_no_role)):
+    """Return current user info with roles (decoded server-side from JWT)."""
+    return current_user
 @app.post("/api/check-emails")
 async def check_emails_now(
     background_tasks: BackgroundTasks,

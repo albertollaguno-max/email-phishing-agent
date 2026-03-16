@@ -42,7 +42,33 @@ def _extract_original_sender(msg, body_text: str, body_html: str) -> str:
         # Gmail forwarded block header: "---------- Forwarded message ---------\nFrom: ..."
         r'Forwarded message[\s\S]{0,200}?From:\s*(.+?)\n',
         r'mensaje reenviado[\s\S]{0,200}?De:\s*(.+?)\n',
+        # Outlook RV: (reenvío) format - common in Spanish Outlook
+        r'(?:^|\n)[ \t]*Enviado:\s*(.+?)\s*(?:\n|$)',   # Outlook ES alternate
+        r'(?:^|\n)[ \t]*Sent:\s*(.+?)\s*(?:\n|$)',      # Outlook EN alternate
     ]
+
+    # Also look for the sender in Outlook block format:
+    # De: Name <email>
+    # Enviado el: date
+    # Para: recipient
+    # Asunto: subject
+    outlook_block_patterns = [
+        r'De:\s*(.+?)\s*\n\s*(?:Enviado|Sent|Fecha)',
+        r'From:\s*(.+?)\s*\n\s*(?:Sent|Date)',
+        r'De:\s*([^\n]*?<[^>]+>)',
+        r'From:\s*([^\n]*?<[^>]+>)',
+    ]
+    # Try Outlook block patterns first (more specific)
+    for pattern in outlook_block_patterns:
+        m = re.search(pattern, body_text, re.IGNORECASE | re.MULTILINE)
+        if m:
+            raw = m.group(1).strip()
+            name, addr = parseaddr(raw)
+            if addr and '@' in addr:
+                return f"{name} <{addr}>" if name else addr
+            if raw:
+                return raw[:200]
+
     for pattern in text_patterns:
         m = re.search(pattern, body_text, re.IGNORECASE | re.MULTILINE)
         if m:
@@ -59,6 +85,16 @@ def _extract_original_sender(msg, body_text: str, body_html: str) -> str:
         # Remove HTML tags
         clean = re.sub(r'<[^>]+>', ' ', body_html)
         clean = html_module.unescape(clean)
+        # Try Outlook block patterns first
+        for pattern in outlook_block_patterns:
+            m = re.search(pattern, clean, re.IGNORECASE | re.MULTILINE)
+            if m:
+                raw = m.group(1).strip()
+                name, addr = parseaddr(raw)
+                if addr and '@' in addr:
+                    return f"{name} <{addr}>" if name else addr
+                if raw:
+                    return raw[:200]
         for pattern in text_patterns:
             m = re.search(pattern, clean, re.IGNORECASE | re.MULTILINE)
             if m:
@@ -107,7 +143,7 @@ def run_agent_loop():
             feedback_examples.append({
                 'subject': cl.subject or '',
                 'sender': cl.from_address or '',
-                'body': '',  # body not stored, use subject+explanation as context
+                'body': cl.body_text or '',  # Now includes real body from DB
                 'is_fraudulent': real_is_fraudulent,
                 'explanation': cl.ai_explanation or ''
             })
@@ -154,10 +190,29 @@ def run_agent_loop():
                 logger.info(f"Processing allowed forwarded email from {forwarder_email} with subject '{msg.subject}'")
                 print(f"DEBUG: Msg {msg.uid} matched. Calling AI for {msg.subject}...")
 
-                # 5. Analyze with AI (passing feedback examples for few-shot learning)
+                # 4b. Extract attachment names and email headers for heuristic analysis
+                attachment_names = []
+                try:
+                    for att in (msg.attachments or []):
+                        if hasattr(att, 'filename') and att.filename:
+                            attachment_names.append(att.filename)
+                except Exception:
+                    pass
+
+                email_headers = {}
+                try:
+                    if hasattr(msg, 'headers') and msg.headers:
+                        email_headers = dict(msg.headers)
+                except Exception:
+                    pass
+
+                # 5. Analyze with AI (passing feedback examples + heuristic data)
                 ai_result, p_tokens, c_tokens, provider = analyze_email_content(
                     msg.subject, original_sender, body_text or body_html,
-                    feedback_examples=feedback_examples if feedback_examples else None
+                    feedback_examples=feedback_examples if feedback_examples else None,
+                    body_html=body_html,
+                    attachment_names=attachment_names if attachment_names else None,
+                    email_headers=email_headers if email_headers else None,
                 )
                 print(f"DEBUG: Msg {msg.uid} AI result: {ai_result}")
                 
@@ -173,6 +228,8 @@ def run_agent_loop():
                     ai_provider_used=provider,
                     prompt_tokens=p_tokens,
                     completion_tokens=c_tokens,
+                    body_text=body_text[:65000] if body_text else None,  # Truncate to fit TEXT column
+                    body_html=body_html[:65000] if body_html else None,
                 )
                 db.add(log_entry)
                 db.commit()

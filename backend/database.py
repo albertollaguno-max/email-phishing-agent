@@ -49,6 +49,10 @@ class EmailAnalysisLog(Base):
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
 
+    # Email body storage for review and debugging
+    body_text = Column(Text, nullable=True)  # Plain text version of the email body
+    body_html = Column(Text, nullable=True)  # HTML version of the email body
+
     response_sent_at = Column(DateTime, nullable=True)
 
     # Human feedback for few-shot learning

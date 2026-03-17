@@ -202,7 +202,12 @@ def run_agent_loop():
                 email_headers = {}
                 try:
                     if hasattr(msg, 'headers') and msg.headers:
-                        email_headers = dict(msg.headers)
+                        # imap_tools returns headers as CIMultiDict where values may be
+                        # lists or tuples. Normalize to {key: first_value_as_str}.
+                        for k, v in msg.headers.items():
+                            key = k.lower()
+                            val = v[0] if isinstance(v, (list, tuple)) else v
+                            email_headers[key] = str(val) if val is not None else ''
                 except Exception:
                     pass
 

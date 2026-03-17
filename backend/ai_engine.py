@@ -407,8 +407,8 @@ def _run_heuristic_analysis(
             f"relacionados con facturación/pagos/cuentas. Estos patrones son los más usados en phishing."
         )
 
-    # ── 2. Brand mention check ──────────────────────────────────────────
-    matched_brands = [b for b in SPOOFED_BRANDS if b in combined]
+    # ── 2. Brand mention check (using word boundaries to avoid false positives) ──
+    matched_brands = [b for b in SPOOFED_BRANDS if re.search(r'\b' + re.escape(b) + r'\b', combined)]
     if matched_brands:
         alerts.append(
             f"⚠️ ALERTA HEURÍSTICA: El email menciona marca(s) frecuentemente suplantadas: {', '.join(matched_brands).upper()}. "

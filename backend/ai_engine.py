@@ -409,29 +409,51 @@ def _run_heuristic_analysis(
 
     # ── 2. Brand mention check (using word boundaries to avoid false positives) ──
     matched_brands = [b for b in SPOOFED_BRANDS if re.search(r'\b' + re.escape(b) + r'\b', combined)]
-    if matched_brands:
-        alerts.append(
-            f"⚠️ ALERTA HEURÍSTICA: El email menciona marca(s) frecuentemente suplantadas: {', '.join(matched_brands).upper()}. "
-            f"Estas marcas son objetivos habituales de campañas de phishing."
-        )
 
     # ── 3. Sender domain verification ───────────────────────────────────
     sender_domain = _extract_domain_from_email(sender)
-    if not sender or sender.lower() == 'unknown':
-        alerts.append(
-            "🚨 ALERTA CRÍTICA: El remitente original NO pudo ser extraído (unknown). "
-            "Esto es altamente sospechoso, ya que un email legítimo debería tener un remitente claro e identificable."
-        )
-    elif sender_domain and matched_brands:
-        # Verify sender domain matches the brand it claims to be
-        for brand in matched_brands:
-            if not _check_domain_brand_match([sender_domain], brand):
-                legit = LEGITIMATE_DOMAINS.get(brand, [])
+
+    # Classify brands: verified (sender domain matches) vs unverified
+    verified_brands = []
+    unverified_brands = []
+
+    if matched_brands:
+        if not sender or sender.lower() == 'unknown':
+            # Unknown sender → all brands are unverified
+            unverified_brands = matched_brands
+            alerts.append(
+                "🚨 ALERTA CRÍTICA: El remitente original NO pudo ser extraído (unknown). "
+                "Esto es altamente sospechoso, ya que un email legítimo debería tener un remitente claro e identificable."
+            )
+        elif sender_domain:
+            for brand in matched_brands:
+                if _check_domain_brand_match([sender_domain], brand):
+                    verified_brands.append(brand)
+                else:
+                    unverified_brands.append(brand)
+
+            if verified_brands:
                 alerts.append(
-                    f"🚨 ALERTA CRÍTICA DE DOMINIO: El email dice ser de {brand.upper()} pero el dominio del remitente "
-                    f"es '{sender_domain}', que NO coincide con los dominios oficiales conocidos: {', '.join(legit)}. "
-                    f"Esto es un indicador FUERTE de phishing/spoofing."
+                    f"✅ REMITENTE VERIFICADO: El dominio del remitente '{sender_domain}' coincide con la marca "
+                    f"{', '.join(b.upper() for b in verified_brands)}. Esto es una señal POSITIVA de legitimidad."
                 )
+
+            if unverified_brands:
+                for brand in unverified_brands:
+                    legit = LEGITIMATE_DOMAINS.get(brand, [])
+                    alerts.append(
+                        f"🚨 ALERTA CRÍTICA DE DOMINIO: El email menciona {brand.upper()} pero el dominio del remitente "
+                        f"es '{sender_domain}', que NO coincide con los dominios oficiales conocidos: {', '.join(legit)}. "
+                        f"Esto es un indicador FUERTE de phishing/spoofing."
+                    )
+        else:
+            # No sender domain extracted, treat all as unverified but not critical
+            unverified_brands = matched_brands
+            alerts.append(
+                f"⚠️ ALERTA HEURÍSTICA: El email menciona marca(s) frecuentemente suplantadas: "
+                f"{', '.join(b.upper() for b in matched_brands)}. "
+                f"No se pudo verificar el dominio del remitente."
+            )
 
     # ── 4. URL extraction and domain verification ───────────────────────
     urls = re.findall(r'https?://[^\s<>"\'\)]+', body)
